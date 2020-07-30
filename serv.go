@@ -24,6 +24,12 @@ func LimitUpload40MB(r *http.Request) {
     r.ParseMultipartForm(10 << 22)
 }
 
+func LimitUpload320MB(r *http.Request) {
+    // Parse our multipart form, 10 << 22 specifies a maximum
+    // upload of 40 MB files.
+    r.ParseMultipartForm(10 << 25)
+}
+
 func ShakyVidBytes(r *http.Request, s *MySess) ([]byte, bool) {
     // FormFile returns the first file for the given key `myFile`
     // it also returns the FileHeader so we can get the Filename,
@@ -167,7 +173,7 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
     _, err = Sess.MkTmpDir(); if err != nil { fmt.Printf("Error returned by MkTmpDir: %s\n", err); return }
     Sess.TmpDir2stabi_vid_full_path()
     Sess.WorkDir2ID()
-    LimitUpload40MB(r)
+    LimitUpload320MB(r)
     fileBytes, ok := ShakyVidBytes(r, Sess); if !ok { return }
     _, err = Sess.ShakyVidHdd(fileBytes); if err != nil { return }
     _, err = Sess.vid_anal(); if err != nil { return }
