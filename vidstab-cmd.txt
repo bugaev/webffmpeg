@@ -1,4 +1,4 @@
 time ffmpeg -i VID_20200704_145645.mp4 -vf vidstabdetect=shakiness=10:accuracy=15:result="mytransforms.trf" -f null -
-time ffmpeg -i VID_20200704_145645.mp4 -vf vidstabdetect=show=1 dummy_output.mp4
+time ffmpeg -i VID_20200704_145645.mp4 -vf vidstabdetect=show=1 dummy_output.mp4 // Visualize transformations.
 # The line below looks for "transforms.trf":
 time ffmpeg -i VID_20200704_145645.mp4 -vf vidstabtransform,unsharp=5:5:0.8:3:3:0.4 out_stabilized.mp4

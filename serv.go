@@ -9,12 +9,11 @@ import (
     "net/http"
     "strings"
     "strconv"
-    "os"
     "net"
     "text/template"
     // "bytes"
-    // "os"
-    // "os/exec"
+    "os"
+    "os/exec"
 )
 
 var SelectUploadFileHtmlTmpl *template.Template
@@ -25,7 +24,7 @@ func LimitUpload40MB(r *http.Request) {
     r.ParseMultipartForm(10 << 22)
 }
 
-func ShakyVidBytes(r *http.Request) ([]byte, bool) {
+func ShakyVidBytes(r *http.Request, s *MySess) ([]byte, bool) {
     // FormFile returns the first file for the given key `myFile`
     // it also returns the FileHeader so we can get the Filename,
     // the Header and the size of the file
@@ -36,6 +35,7 @@ func ShakyVidBytes(r *http.Request) ([]byte, bool) {
         return nil, false
     }
     defer file.Close() // In case reading to memory fails.
+    s.shaky_vid_orig_name = header.Filename
     fmt.Printf("Uploaded File: %+v\n", header.Filename)
     fmt.Printf("File Size: %+v\n", header.Size)
     fmt.Printf("MIME Header: %+v\n", header.Header)
@@ -55,9 +55,11 @@ type MySess struct {
   w http.ResponseWriter
   r *http.Request
   TmpDir string
-  shaky_vid string
+  shaky_vid_orig_name string
+  shaky_vid_full_path string
   stabi_vid string
   stabi_vid_full_path string
+  transform_full_path string
   ID string
 }
 
@@ -87,8 +89,8 @@ func (s *MySess) MkTmpDir () (*MySess, error) {
 
 func (s *MySess) ShakyVidHdd (fileBytes []byte) (*MySess, error) {
     // Create input file "shaky.mp4" within WORKDIR:
-    s.shaky_vid = s.TmpDir + "/shaky.mp4"
-    err := ioutil.WriteFile(s.shaky_vid, fileBytes, 0644)
+    s.shaky_vid_full_path = s.TmpDir + "/shaky.mp4"
+    err := ioutil.WriteFile(s.shaky_vid_full_path, fileBytes, 0644)
     if err != nil {
       fmt.Println(err)
     }
@@ -96,10 +98,56 @@ func (s *MySess) ShakyVidHdd (fileBytes []byte) (*MySess, error) {
 }
 
 func (s *MySess)  TmpDir2stabi_vid_full_path() (*MySess, error) {
-    // s.stabi_vid_full_path = s.TmpDir + "/" + stabi_vid
-    s.stabi_vid_full_path = "WORKDIR" + "/" + s.stabi_vid
+    s.stabi_vid_full_path = s.TmpDir + "/" + s.stabi_vid
+    // Mock output file: s.stabi_vid_full_path = "WORKDIR" + "/" + s.stabi_vid
     return s, nil
 }
+
+func (s *MySess) vid_anal() (*MySess, error) {
+
+    ffmpeg_exec, _ := exec.LookPath( "ffmpeg" )
+    s.transform_full_path = s.TmpDir + "/transforms.trf"
+
+    cmd := &exec.Cmd {
+      Path:  ffmpeg_exec,
+      Args: []string{ ffmpeg_exec, "-i", s.shaky_vid_full_path, "-vf", "vidstabdetect=shakiness=10:accuracy=15:result=" + s.transform_full_path, "-f", "null", "-" },
+      Stdout: os.Stdout,
+      Stderr: os.Stdout,
+    }
+
+    if err := cmd.Run(); err != nil {
+      fmt.Println( "Error in vid_anal: ", err );
+      return nil, err
+    }
+    return s, nil
+}
+
+
+func (s *MySess) vid_stab() (*MySess, error) {
+
+    ffmpeg_exec, _ := exec.LookPath( "ffmpeg" )
+    cmd := &exec.Cmd {
+      Path:  ffmpeg_exec,
+      Args: []string{ ffmpeg_exec, "-i", s.shaky_vid_full_path, "-vf", "vidstabtransform=input=" + s.transform_full_path + ",unsharp=5:5:0.8:3:3:0.4", s.stabi_vid_full_path },
+      Stdout: os.Stdout,
+      Stderr: os.Stdout,
+    }
+
+    if err := cmd.Run(); err != nil {
+      fmt.Println( "Error in vid_stab: ", err );
+      return nil, err
+    }
+    return s, nil
+}
+
+func append_base_name(orig string, appendix string) string {
+  orig_parts := strings.Split(orig, ".")
+  suff := ArrLastStr(orig_parts)
+  suff_len := len(suff)
+  base_name := orig[0:len(orig) - suff_len - 1] + appendix + "." + suff
+  return base_name
+}
+
 
 // Based on: https://tutorialedge.net/golang/go-file-upload-tutorial/
 // TODO: Why is w not a pointer?
@@ -119,27 +167,14 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
     _, err = Sess.MkTmpDir(); if err != nil { fmt.Printf("Error returned by MkTmpDir: %s\n", err); return }
     Sess.TmpDir2stabi_vid_full_path()
     Sess.WorkDir2ID()
-
-//    return
-
     LimitUpload40MB(r)
-    fileBytes, ok := ShakyVidBytes(r); if !ok { return }
+    fileBytes, ok := ShakyVidBytes(r, Sess); if !ok { return }
     _, err = Sess.ShakyVidHdd(fileBytes); if err != nil { return }
+    _, err = Sess.vid_anal(); if err != nil { return }
+    _, err = Sess.vid_stab(); if err != nil { return }
 
-    // fmt.Fprintf(w, "Starting analysis\n")
-//    ffmpeg_exec, _ := exec.LookPath( "ffmpeg" )
-//    cmd := &exec.Cmd {
-//      Path:  ffmpeg_exec,
-//      Args: []string{ ffmpeg_exec, "-i", Sess.TmpDir + "/shaky.mp4", "-vf", "vidstabdetect=shakiness=10:accuracy=15:result=mytransforms.trf", "-f", "null", "-" },
-//      Stdout: os.Stdout,
-//      Stderr: os.Stdout,
-//    }
-
-    // if err := cmd.Run(); err != nil {
-    //   fmt.Println( "Error: ", err );
-    // }
 // https://stackoverflow.com/questions/24116147/how-to-download-file-in-browser-from-go-server
-   w.Header().Set("Content-Disposition", "attachment; filename="+strconv.Quote(Sess.stabi_vid))
+   w.Header().Set("Content-Disposition", "attachment; filename="+strconv.Quote(append_base_name(Sess.shaky_vid_orig_name, "_stab")))
    w.Header().Set("Content-Type", "application/octet-stream")
    http.ServeFile(w, r, Sess.stabi_vid_full_path)
 }
@@ -149,6 +184,7 @@ func RequestedHostByClient(r *http.Request) string {
 }
 
 func SelectUploadFile(w http.ResponseWriter, r *http.Request) {
+    // https://coderwall.com/p/ns60fq/simply-output-go-html-template-execution-to-strings
     // var buf bytes.Buffer
     // err := SelectUploadFileHtmlTmpl.Execute(&buf, MyURL{AddrWithPortSeenByClient: RequestedHostByClient(r)}); if err != nil { panic(err) }
     // fmt.Fprintf(w, buf.String())
