@@ -60,15 +60,13 @@ func ShakyVidBytes(r *http.Request, s *MySess) ([]byte, bool) {
 }
 
 type MySess struct {
-  w http.ResponseWriter
-  r *http.Request
+  ID string
   TmpDir string
   shaky_vid_orig_name string
   shaky_vid_full_path string
   stabi_vid string
   stabi_vid_full_path string
   transform_full_path string
-  ID string
 }
 
 
@@ -157,6 +155,16 @@ func append_base_name(orig string, appendix string) string {
 }
 
 
+
+func (s *MySess) send_stabi_vid_to_client(w http.ResponseWriter, r *http.Request) (*MySess, error) {
+// https://stackoverflow.com/questions/24116147/how-to-download-file-in-browser-from-go-server
+   w.Header().Set("Content-Disposition", "attachment; filename="+strconv.Quote(append_base_name(s.shaky_vid_orig_name, "_stab")))
+   w.Header().Set("Content-Type", "application/octet-stream")
+   http.ServeFile(w, r, s.stabi_vid_full_path)
+   return s, nil
+}
+
+
 // Based on: https://tutorialedge.net/golang/go-file-upload-tutorial/
 // TODO: Why is w not a pointer?
 func uploadFile(w http.ResponseWriter, r *http.Request) {
@@ -165,8 +173,8 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
     var err error
 
     Sess := &MySess{
-      w: w,
-      r: r,
+      // w: w,
+      // r: r,
       stabi_vid: "stabi_dummy.mp4",
       // Plus uninitialized fields.
     }
@@ -180,11 +188,7 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
     _, err = Sess.ShakyVidHdd(fileBytes); if err != nil { return }
     _, err = Sess.vid_anal(); if err != nil { return }
     _, err = Sess.vid_stab(); if err != nil { return }
-
-// https://stackoverflow.com/questions/24116147/how-to-download-file-in-browser-from-go-server
-   w.Header().Set("Content-Disposition", "attachment; filename="+strconv.Quote(append_base_name(Sess.shaky_vid_orig_name, "_stab")))
-   w.Header().Set("Content-Type", "application/octet-stream")
-   http.ServeFile(w, r, Sess.stabi_vid_full_path)
+    _, err = Sess.send_stabi_vid_to_client(w, r); if err != nil { return }
 }
 
 func RequestedHostByClient(r *http.Request) string {
