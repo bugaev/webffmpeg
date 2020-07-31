@@ -14,6 +14,8 @@ import (
     // "bytes"
     "os"
     "os/exec"
+    "encoding/json"
+    "github.com/rs/cors"
 )
 
 var SelectUploadFileHtmlTmpl *template.Template
@@ -198,9 +200,25 @@ func SelectUploadFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func setupRoutes() {
-    http.HandleFunc("/upload", uploadFile)
-    http.HandleFunc("/", SelectUploadFile)
-    http.ListenAndServe(":8080", nil)
+    AllowCORS := true
+
+    if !AllowCORS {
+        http.HandleFunc("/upload", uploadFile)
+        http.HandleFunc("/status", status_handler)
+        http.HandleFunc("/", SelectUploadFile)
+        http.ListenAndServe(":8080", nil)
+    } else
+    {
+        mux := http.NewServeMux()
+        mux.HandleFunc("/upload", uploadFile)
+        mux.HandleFunc("/status", status_handler)
+        mux.HandleFunc("/", SelectUploadFile)
+        // cors.Default() setup the middleware with default options being
+        // all origins accepted with simple methods (GET, POST). See
+        // documentation below for more options.
+        handler := cors.Default().Handler(mux)
+        http.ListenAndServe(":8080", handler)
+    }
 }
 
 func ListAllHostIP() {
@@ -270,6 +288,34 @@ func NewSelectUploadFileHtmlTmpl() {
   </body>
 </html>`)
     if err != nil { panic(err) }
+}
+
+type Status struct {
+    SizeMB int
+    IsDone   bool
+}
+
+func status_handler(w http.ResponseWriter, r *http.Request) {
+// From: https://www.golangprograms.com/example-to-handle-get-and-post-request-in-golang.html
+// Call ParseForm() to parse the raw query and update r.PostForm and r.Form.
+    if err := r.ParseForm(); err != nil {
+        fmt.Fprintf(w, "ParseForm() err: %v", err)
+        return
+    }
+    var IsDone bool = false
+    ID, err := strconv.Atoi(r.FormValue("ID")); if err != nil { return }
+// https://www.alexedwards.net/blog/golang-response-snippets
+    StatusResp := Status{ID + 1, IsDone}
+    js, err := json.Marshal(StatusResp)
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+    // fmt.Fprintf(w, "%d", ID + 1) // Works fine.
+    w.Header().Set("Content-Type", "application/json")
+    w.Write(js)
+    fmt.Printf("status_handler responded with: %q\n", js)
+    return
 }
 
 func main() {
