@@ -1,3 +1,5 @@
+// vim: ts=4 sw=4 
+// set makeprg=go\ build\ serv.go
 package main
 
 // Helpfull snippets:
@@ -16,9 +18,13 @@ import (
     "os/exec"
     "encoding/json"
     "github.com/rs/cors"
+	"sync"
 )
 
+// Globals:
 var SelectUploadFileHtmlTmpl *template.Template
+var ID2Sess map[string]*MySess = make(map[string]*MySess)
+var ID2SessMux sync.Mutex
 
 func LimitUpload40MB(r *http.Request) {
     // Parse our multipart form, 10 << 22 specifies a maximum
@@ -66,7 +72,7 @@ type MySess struct {
   shaky_vid_full_path string
   stabi_vid string
   stabi_vid_full_path string
-  transform_full_path string
+  transforms_full_path string
 }
 
 
@@ -112,11 +118,11 @@ func (s *MySess)  TmpDir2stabi_vid_full_path() (*MySess, error) {
 func (s *MySess) vid_anal() (*MySess, error) {
 
     ffmpeg_exec, _ := exec.LookPath( "ffmpeg" )
-    s.transform_full_path = s.TmpDir + "/transforms.trf"
+    s.transforms_full_path = s.TmpDir + "/transforms.trf"
 
     cmd := &exec.Cmd {
       Path:  ffmpeg_exec,
-      Args: []string{ ffmpeg_exec, "-i", s.shaky_vid_full_path, "-vf", "vidstabdetect=shakiness=10:accuracy=15:result=" + s.transform_full_path, "-f", "null", "-" },
+      Args: []string{ ffmpeg_exec, "-i", s.shaky_vid_full_path, "-vf", "vidstabdetect=shakiness=10:accuracy=15:result=" + s.transforms_full_path, "-f", "null", "-" },
       Stdout: os.Stdout,
       Stderr: os.Stdout,
     }
@@ -134,7 +140,7 @@ func (s *MySess) vid_stab() (*MySess, error) {
     ffmpeg_exec, _ := exec.LookPath( "ffmpeg" )
     cmd := &exec.Cmd {
       Path:  ffmpeg_exec,
-      Args: []string{ ffmpeg_exec, "-i", s.shaky_vid_full_path, "-vf", "vidstabtransform=input=" + s.transform_full_path + ",unsharp=5:5:0.8:3:3:0.4", s.stabi_vid_full_path },
+      Args: []string{ ffmpeg_exec, "-i", s.shaky_vid_full_path, "-vf", "vidstabtransform=input=" + s.transforms_full_path + ",unsharp=5:5:0.8:3:3:0.4", s.stabi_vid_full_path },
       Stdout: os.Stdout,
       Stderr: os.Stdout,
     }
@@ -164,6 +170,12 @@ func (s *MySess) send_stabi_vid_to_client(w http.ResponseWriter, r *http.Request
    return s, nil
 }
 
+func ffmpeg(s *MySess) {
+	var err error
+    _, err = s.vid_anal(); if err != nil { return }
+    _, err = s.vid_stab(); if err != nil { return }
+    // I will need it later. KEEP IT!: _, err = s.send_stabi_vid_to_client(w, r); if err != nil { return }
+}
 
 // Based on: https://tutorialedge.net/golang/go-file-upload-tutorial/
 // TODO: Why is w not a pointer?
@@ -173,9 +185,7 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
     var err error
 
     Sess := &MySess{
-      // w: w,
-      // r: r,
-      stabi_vid: "stabi_dummy.mp4",
+      stabi_vid: "stabi.mp4",
       // Plus uninitialized fields.
     }
 
@@ -186,9 +196,11 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
     LimitUpload320MB(r)
     fileBytes, ok := ShakyVidBytes(r, Sess); if !ok { return }
     _, err = Sess.ShakyVidHdd(fileBytes); if err != nil { return }
-    _, err = Sess.vid_anal(); if err != nil { return }
-    _, err = Sess.vid_stab(); if err != nil { return }
-    _, err = Sess.send_stabi_vid_to_client(w, r); if err != nil { return }
+
+    go ffmpeg(Sess)
+	ID2SessMux.Lock()
+    ID2Sess[Sess.ID] = Sess
+	ID2SessMux.Unlock()
 }
 
 func RequestedHostByClient(r *http.Request) string {
@@ -294,9 +306,37 @@ func NewSelectUploadFileHtmlTmpl() {
     if err != nil { panic(err) }
 }
 
-type Status struct {
-    SizeMB int
-    IsDone   bool
+type OutputStatus struct {
+    transforms_file_size_mb	int
+	stabi_file_size_mb		int
+    is_done					bool
+}
+
+// func (s *MySess) serve_progress_html()
+
+func file_size_mb_zero_if_nonexist(path string) (int, bool) {
+	info, err := os.Stat(path); 
+	// It is not a file bet a directory - it shouldn't have happened:
+	if info.IsDir() { return 0, false }
+
+	if err != nil {
+		// Doesn't exist is OK --- it may not be created yet.
+		if os.IsNotExist(err) {
+	        return 0, true
+		}
+		// Otherwise, err is a problem:
+		return 0, false
+	}
+	// And finally, if file exist and no errors triggered:
+	x := info.Size()
+	return x / 1000000 // Return Millions of Bytes.
+}
+
+func (s *MySess) output_files_status() *OutputStatus {
+	
+	stat := *OutputStatus{}
+	stat.transforms_file_size_mb = file_size_mb_zero_if_nonexist(s.transforms_full_path)
+
 }
 
 func status_handler(w http.ResponseWriter, r *http.Request) {
@@ -307,9 +347,12 @@ func status_handler(w http.ResponseWriter, r *http.Request) {
         return
     }
     var IsDone bool = false
-    ID, err := strconv.Atoi(r.FormValue("ID")); if err != nil { return }
+    // ID, err := strconv.Atoi(r.FormValue("ID")); if err != nil { return }
+    ID := r.FormValue("ID")
+    Sess := ID2Sess[ID]
+
 // https://www.alexedwards.net/blog/golang-response-snippets
-    StatusResp := Status{ID + 1, IsDone}
+    StatusResp := Status{stabi_size_mb(ID), IsDone}
     js, err := json.Marshal(StatusResp)
     if err != nil {
         http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -327,4 +370,5 @@ func main() {
     NewSelectUploadFileHtmlTmpl()
     setupRoutes()
 }
+
 
