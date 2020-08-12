@@ -23,6 +23,7 @@ import (
 
 // Globals:
 var SelectUploadFileHtmlTmpl *template.Template
+var ProgressHtmlTmpl  *template.Template
 var ID2Sess map[string]*MySess = make(map[string]*MySess)
 var ID2SessMux sync.Mutex
 
@@ -91,6 +92,18 @@ func (s *MySess) WorkDir2ID() *MySess {
 func (s *MySess) MkTmpDir () (*MySess, error) {
     var err error
     s.TmpDir, err = ioutil.TempDir("WORKDIR", "")
+    fmt.Println("Temporary directory is:", s.TmpDir, "<--")
+    if err != nil {
+        fmt.Println(err)
+        return s, err
+    }
+    return s, nil
+}
+
+func (s *MySess) MockMkTmpDir () (*MySess, error) {
+    var err error
+	s.TmpDir = "WORKDIR/12345"
+    err = os.MkdirAll(s.TmpDir, 0777)
     fmt.Println("Temporary directory is:", s.TmpDir, "<--")
     if err != nil {
         fmt.Println(err)
@@ -190,7 +203,7 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
     }
 
 
-    _, err = Sess.MkTmpDir(); if err != nil { fmt.Printf("Error returned by MkTmpDir: %s\n", err); return }
+    _, err = Sess.MockMkTmpDir(); if err != nil { fmt.Printf("Error returned by MkTmpDir: %s\n", err); return }
     Sess.TmpDir2stabi_vid_full_path()
     Sess.WorkDir2ID()
     LimitUpload320MB(r)
@@ -201,6 +214,7 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
 	ID2SessMux.Lock()
     ID2Sess[Sess.ID] = Sess
 	ID2SessMux.Unlock()
+	Sess.ProgressHtml(w)
 }
 
 func RequestedHostByClient(r *http.Request) string {
@@ -213,6 +227,11 @@ func SelectUploadFile(w http.ResponseWriter, r *http.Request) {
     // err := SelectUploadFileHtmlTmpl.Execute(&buf, MyURL{AddrWithPortSeenByClient: RequestedHostByClient(r)}); if err != nil { panic(err) }
     // fmt.Fprintf(w, buf.String())
     err := SelectUploadFileHtmlTmpl.Execute(w, MyURL{AddrWithPortSeenByClient: RequestedHostByClient(r)}); if err != nil { panic(err) }
+}
+
+func (s *MySess) ProgressHtml(w http.ResponseWriter) (*MySess, error) {
+    err := ProgressHtmlTmpl.Execute(w, *s); if err != nil { panic(err) }
+	return s, err
 }
 
 func setupRoutes() {
@@ -306,37 +325,105 @@ func NewSelectUploadFileHtmlTmpl() {
     if err != nil { panic(err) }
 }
 
+
+func NewProgressHtmlTmpl() {
+    var err error
+    ProgressHtmlTmpl, err = template.New("ProgressHtmlTmpl").Parse(
+`<!DOCTYPE html>
+<html>
+    <head>
+        <title>Example</title>
+    </head>
+
+
+    <body onload="my_on_load()">
+
+       <script>
+           var timer_inst
+           var sess_id = {{.ID}}
+           var TimeInterval = 1000
+
+           var xmlhttp = new XMLHttpRequest();
+           var url = "/status";
+
+		   // DO SOMETHING HERE ONCE SERVER RETURNS (POSSIBLY INCOMPLETE) PROGRESS REPORT:
+           xmlhttp.onreadystatechange = function() {
+           		if (this.readyState == 4 && this.status == 200) {
+                	var dict = JSON.parse(this.responseText);
+					// DO WHAT YOU WANTED ONCE YOU GOT THE VALID REPORT:
+                   	// document.getElementById("id01").innerHTML = dict["stabi_file_size_mb"]
+		            document.getElementById("id01").innerHTML = this.responseText
+		   			// Check the status after TimeInterval milliseconds, idle before that.
+		   			// Enable timer only after the successful transaction with the server.
+                   timer_inst = setTimeout(timer_callback, TimeInterval)
+               }
+           };
+
+           
+           function timer_callback() {
+               var IDVar = "ID="
+               var PostPar = IDVar.concat(sess_id)
+               xmlhttp.open("POST", url, true);
+               xmlhttp.setRequestHeader("Content-type", "application/x-www-form-urlencoded");
+               
+               xmlhttp.send(PostPar);
+           }
+
+           function my_on_load() {
+               timer_inst = setTimeout(timer_callback, TimeInterval)
+           }
+       </script>
+
+       <div id="id01"> To be replaced. </div>
+        <p>This is an example of a simple HTML page with one paragraph.</p>
+    </body>
+</html>`)
+    if err != nil { panic(err) }
+}
+
 type OutputStatus struct {
-    transforms_file_size_mb	int
-	stabi_file_size_mb		int
-    is_done					bool
+	Transforms_file_size_mb	int		`json:"transforms_file_size_mb"`
+	Stabi_file_size_mb		int		`json:"stabi_file_size_mb"`
+	Is_done					bool	`json:"is_done"`
 }
 
 // func (s *MySess) serve_progress_html()
 
 func file_size_mb_zero_if_nonexist(path string) (int, bool) {
-	info, err := os.Stat(path); 
-	// It is not a file bet a directory - it shouldn't have happened:
-	if info.IsDir() { return 0, false }
+	// fmt.Println("BEFORE DOING STAT FOR: ",  path)
+	info, err := os.Stat(path);
+	// fmt.Println("AFTER DOING STAT FOR: ",  path)
+	// It is not a file but a directory - it shouldn't have happened:
 
 	if err != nil {
 		// Doesn't exist is OK --- it may not be created yet.
 		if os.IsNotExist(err) {
+			// fmt.Println("FILE DOESN'T EXIST: ",  path)
 	        return 0, true
 		}
 		// Otherwise, err is a problem:
+		fmt.Println("ERROR: FILE HAS SOME PROBLEM: ",  path)
 		return 0, false
 	}
-	// And finally, if file exist and no errors triggered:
+
+	if info.IsDir() {
+		fmt.Println("ERROR: FILE IS A DIRECTORY: ",  path)
+		return 0, false }
+
+	// And finally, if file exists and no errors triggered:
 	x := info.Size()
-	return x / 1000000 // Return Millions of Bytes.
+	// fmt.Println("FILE EXISTS: ",  path)
+	return int(x / 1000000), true // Return Millions of Bytes.
 }
 
-func (s *MySess) output_files_status() *OutputStatus {
-	
-	stat := *OutputStatus{}
-	stat.transforms_file_size_mb = file_size_mb_zero_if_nonexist(s.transforms_full_path)
-
+func (s *MySess) output_files_status() (*OutputStatus, bool) {
+	stat := &OutputStatus{}
+	var ok bool
+	stat.Transforms_file_size_mb, ok = file_size_mb_zero_if_nonexist(s.transforms_full_path)
+	if !ok { return nil, false }
+	stat.Stabi_file_size_mb, ok = file_size_mb_zero_if_nonexist(s.stabi_vid_full_path)
+	if !ok { return nil, false }
+	return stat, true
 }
 
 func status_handler(w http.ResponseWriter, r *http.Request) {
@@ -352,12 +439,18 @@ func status_handler(w http.ResponseWriter, r *http.Request) {
     Sess := ID2Sess[ID]
 
 // https://www.alexedwards.net/blog/golang-response-snippets
-    StatusResp := Status{stabi_size_mb(ID), IsDone}
+    StatusResp, ok := Sess.output_files_status()
+	if !ok { return }
+	// I don't know yet how to decide whether processing is done. So for now, OutputStatus.is_done will be simply "false":
+	StatusResp.Is_done = IsDone
     js, err := json.Marshal(StatusResp)
     if err != nil {
         http.Error(w, err.Error(), http.StatusInternalServerError)
         return
     }
+	fmt.Println("------------------------------------------------------------------------------------")
+	fmt.Println(StatusResp.Transforms_file_size_mb, StatusResp.Stabi_file_size_mb)
+	fmt.Println("------------------------------------------------------------------------------------")
     // fmt.Fprintf(w, "%d", ID + 1) // Works fine.
     w.Header().Set("Content-Type", "application/json")
     w.Write(js)
@@ -368,6 +461,7 @@ func status_handler(w http.ResponseWriter, r *http.Request) {
 func main() {
     fmt.Println("Hello World")
     NewSelectUploadFileHtmlTmpl()
+	NewProgressHtmlTmpl()
     setupRoutes()
 }
 
