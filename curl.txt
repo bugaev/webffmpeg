@@ -1,2 +1,2 @@
-curl -d "ID=123" -X POST http://localhost:8080/status
+curl -d "ID=12345" -X POST http://localhost:8080/status
 
