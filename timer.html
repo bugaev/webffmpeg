@@ -9,7 +9,7 @@
 
        <script>
            var timer_inst
-           var timer_count
+           var sess_id = 246269710
            var TimeInterval = 1000
 
            var xmlhttp = new XMLHttpRequest();
@@ -19,8 +19,8 @@
                if (this.readyState == 4 && this.status == 200) {
                    var dict = JSON.parse(this.responseText);
                    // DO SOMETHING HERE:
-                   document.getElementById("id01").innerHTML = dict["SizeMB"] // timer_count
-                   timer_count = dict["SizeMB"]
+                   // document.getElementById("id01").innerHTML = dict["stabi_file_size_mb"]
+		      document.getElementById("id01").innerHTML = this.responseText
 		   // Check the status after TimeInterval milliseconds, idle before that.
 		   // Enable timer only after the successful transaction with the server.
                    timer_inst = setTimeout(timer_callback, TimeInterval)
@@ -28,21 +28,16 @@
            };
 
            
-// TODO: Possible backlog forming if AJAX requests are not returned within the interval?
            function timer_callback() {
                var IDVar = "ID="
-               var PostPar = IDVar.concat(timer_count)
+               var PostPar = IDVar.concat(sess_id)
                xmlhttp.open("POST", url, true);
                xmlhttp.setRequestHeader("Content-type", "application/x-www-form-urlencoded");
                
                xmlhttp.send(PostPar);
-               // timer_count = timer_count + 1
-               // if (timer_count > 5) clearInterval(timer_inst)
            }
 
            function my_on_load() {
-               timer_count = 0
-               // document.getElementById("id01").innerHTML = timer_count
                timer_inst = setTimeout(timer_callback, TimeInterval)
            }
        </script>
