@@ -22,6 +22,7 @@ import (
 )
 
 // Globals:
+var MockUpload = true
 var SelectUploadFileHtmlTmpl *template.Template
 var ProgressHtmlTmpl  *template.Template
 var ID2Sess map[string]*MySess = make(map[string]*MySess)
@@ -74,6 +75,7 @@ type MySess struct {
   stabi_vid string
   stabi_vid_full_path string
   transforms_full_path string
+  is_done bool
 }
 
 
@@ -103,12 +105,28 @@ func (s *MySess) MkTmpDir () (*MySess, error) {
 func (s *MySess) MockMkTmpDir () (*MySess, error) {
     var err error
 	s.TmpDir = "WORKDIR/12345"
+	if yes, err := file_system_entry_exists(s.TmpDir); yes {
+		return s, err
+	}
     err = os.MkdirAll(s.TmpDir, 0777)
     fmt.Println("Temporary directory is:", s.TmpDir, "<--")
     if err != nil {
         fmt.Println(err)
         return s, err
     }
+    return s, nil
+}
+
+
+func (s *MySess) MockShakyVidHdd () (*MySess, error) {
+    // Create input file "shaky.mp4" within WORKDIR:
+    s.shaky_vid_full_path = s.TmpDir + "/shaky.mp4"
+	if yes, err := file_system_entry_exists(s.shaky_vid_full_path); yes {
+		return s, err
+	} else {
+	// Create a link to a resource file:
+		return s, os.Symlink("RESOURCE/mock_upload_video.mp4", "WORKDIR/12345/shaky.mp4")
+	}
     return s, nil
 }
 
@@ -187,7 +205,7 @@ func ffmpeg(s *MySess) {
 	var err error
     _, err = s.vid_anal(); if err != nil { return }
     _, err = s.vid_stab(); if err != nil { return }
-    // I will need it later. KEEP IT!: _, err = s.send_stabi_vid_to_client(w, r); if err != nil { return }
+	s.is_done = true
 }
 
 // Based on: https://tutorialedge.net/golang/go-file-upload-tutorial/
@@ -207,13 +225,21 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
     Sess.TmpDir2stabi_vid_full_path()
     Sess.WorkDir2ID()
     LimitUpload320MB(r)
-    fileBytes, ok := ShakyVidBytes(r, Sess); if !ok { return }
-    _, err = Sess.ShakyVidHdd(fileBytes); if err != nil { return }
+	if ! MockUpload {
+	// We don't simulate upload, do everything honestly:
+		fileBytes, ok := ShakyVidBytes(r, Sess); if !ok { return }
+		_, err = Sess.ShakyVidHdd(fileBytes); if err != nil { return }
+	} else {
+	// We simulate upload, all files are already on disk, but not necessarily in WORKDIR:
+		_, err = Sess.MockShakyVidHdd(); if err != nil { return }
+	}
 
-    go ffmpeg(Sess)
 	ID2SessMux.Lock()
-    ID2Sess[Sess.ID] = Sess
+	ID2Sess[Sess.ID] = Sess
 	ID2SessMux.Unlock()
+//	if ! MockUpload {
+		go ffmpeg(Sess)
+//	}
 	Sess.ProgressHtml(w)
 }
 
@@ -240,6 +266,7 @@ func setupRoutes() {
     if !AllowCORS {
         http.HandleFunc("/upload", uploadFile)
         http.HandleFunc("/status", status_handler)
+        http.HandleFunc("/download", download_stabi_handler)
         http.HandleFunc("/", SelectUploadFile)
         http.ListenAndServe(":8080", nil)
     } else
@@ -339,15 +366,15 @@ func NewProgressHtmlTmpl() {
     <body onload="my_on_load()">
 
        <script>
-           var timer_inst
-           var sess_id = {{.ID}}
-           var TimeInterval = 1000
+			var timer_inst
+		   	var sess_id = {{.ID}}
+		   	var TimeInterval = 1000
 
-           var xmlhttp = new XMLHttpRequest();
-           var url = "/status";
+		   	var xmlhttp = new XMLHttpRequest();
+		   	var url = "/status";
 
-		   // DO SOMETHING HERE ONCE SERVER RETURNS (POSSIBLY INCOMPLETE) PROGRESS REPORT:
-           xmlhttp.onreadystatechange = function() {
+		   	// DO SOMETHING HERE ONCE SERVER RETURNS (POSSIBLY INCOMPLETE) PROGRESS REPORT:
+			xmlhttp.onreadystatechange = function() {
            		if (this.readyState == 4 && this.status == 200) {
                 	var dict = JSON.parse(this.responseText);
 					// DO WHAT YOU WANTED ONCE YOU GOT THE VALID REPORT:
@@ -355,9 +382,11 @@ func NewProgressHtmlTmpl() {
 		            document.getElementById("id01").innerHTML = this.responseText
 		   			// Check the status after TimeInterval milliseconds, idle before that.
 		   			// Enable timer only after the successful transaction with the server.
-                   timer_inst = setTimeout(timer_callback, TimeInterval)
-               }
-           };
+					if (!Boolean(dict["is_done"])) {
+					   timer_inst = setTimeout(timer_callback, TimeInterval)
+					}
+				}
+			};
 
            
            function timer_callback() {
@@ -388,6 +417,16 @@ type OutputStatus struct {
 }
 
 // func (s *MySess) serve_progress_html()
+
+// https://stackoverflow.com/questions/10510691/how-to-check-whether-a-file-or-directory-exists
+// exists returns whether the given file or directory exists
+func file_system_entry_exists(path string) (bool, error) {
+    _, err := os.Stat(path)
+    if err == nil { return true, nil }
+    if os.IsNotExist(err) { return false, nil }
+    return false, err
+}
+
 
 func file_size_mb_zero_if_nonexist(path string) (int, bool) {
 	// fmt.Println("BEFORE DOING STAT FOR: ",  path)
@@ -423,7 +462,27 @@ func (s *MySess) output_files_status() (*OutputStatus, bool) {
 	if !ok { return nil, false }
 	stat.Stabi_file_size_mb, ok = file_size_mb_zero_if_nonexist(s.stabi_vid_full_path)
 	if !ok { return nil, false }
+	stat.Is_done = s.is_done
 	return stat, true
+}
+
+
+func download_stabi_handler(w http.ResponseWriter, r *http.Request) {
+// From: https://www.golangprograms.com/example-to-handle-get-and-post-request-in-golang.html
+// Call ParseForm() to parse the raw query and update r.PostForm and r.Form.
+	var err error
+    if err = r.ParseForm(); err != nil {
+        fmt.Fprintf(w, "ParseForm() err: %v", err)
+        return
+    }
+    ID := r.FormValue("ID")
+    Sess := ID2Sess[ID]
+
+	if Sess.is_done {
+		_, err = Sess.send_stabi_vid_to_client(w, r); if err != nil { return }
+    }
+
+    return
 }
 
 func status_handler(w http.ResponseWriter, r *http.Request) {
@@ -433,8 +492,6 @@ func status_handler(w http.ResponseWriter, r *http.Request) {
         fmt.Fprintf(w, "ParseForm() err: %v", err)
         return
     }
-    var IsDone bool = false
-    // ID, err := strconv.Atoi(r.FormValue("ID")); if err != nil { return }
     ID := r.FormValue("ID")
     Sess := ID2Sess[ID]
 
@@ -442,16 +499,20 @@ func status_handler(w http.ResponseWriter, r *http.Request) {
     StatusResp, ok := Sess.output_files_status()
 	if !ok { return }
 	// I don't know yet how to decide whether processing is done. So for now, OutputStatus.is_done will be simply "false":
-	StatusResp.Is_done = IsDone
     js, err := json.Marshal(StatusResp)
     if err != nil {
         http.Error(w, err.Error(), http.StatusInternalServerError)
         return
     }
+
+	// if Sess.is_done {
+	// 	_, err = Sess.send_stabi_vid_to_client(w, r); if err != nil { return }
+    // }
+
 	fmt.Println("------------------------------------------------------------------------------------")
 	fmt.Println(StatusResp.Transforms_file_size_mb, StatusResp.Stabi_file_size_mb)
 	fmt.Println("------------------------------------------------------------------------------------")
-    // fmt.Fprintf(w, "%d", ID + 1) // Works fine.
+
     w.Header().Set("Content-Type", "application/json")
     w.Write(js)
     fmt.Printf("status_handler responded with: %q\n", js)
