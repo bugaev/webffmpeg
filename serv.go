@@ -22,6 +22,7 @@ import (
 )
 
 // Globals:
+const sess_id_start = len("download/") + 1
 var MockUpload = true
 var SelectUploadFileHtmlTmpl *template.Template
 var ProgressHtmlTmpl  *template.Template
@@ -120,13 +121,29 @@ func (s *MySess) MockMkTmpDir () (*MySess, error) {
 
 func (s *MySess) MockShakyVidHdd () (*MySess, error) {
     // Create input file "shaky.mp4" within WORKDIR:
+    s.shaky_vid_orig_name = "shaky.mp4"
     s.shaky_vid_full_path = s.TmpDir + "/shaky.mp4"
-	if yes, err := file_system_entry_exists(s.shaky_vid_full_path); yes {
-		return s, err
-	} else {
-	// Create a link to a resource file:
-		return s, os.Symlink("RESOURCE/mock_upload_video.mp4", "WORKDIR/12345/shaky.mp4")
+    s.stabi_vid_full_path = s.TmpDir + "/stabi.mp4"
+	s.transforms_full_path = s.TmpDir + "/transforms.trf"
+
+	if yes, _ := file_system_entry_exists(s.shaky_vid_full_path); !yes {
+		// Create a link to a resource file:
+		err1 := os.Link("RESOURCE/shaky.mp4", s.shaky_vid_full_path)
+		if err1 != nil {return s, err1}
 	}
+
+	if yes, _ := file_system_entry_exists(s.transforms_full_path); !yes {
+	// Create a link to a resource file:
+		err1 := os.Link("RESOURCE/transforms.trf", s.transforms_full_path)
+		if err1 != nil {return s, err1}
+	}
+
+	if yes, _ := file_system_entry_exists(s.stabi_vid_full_path); !yes {
+	// Create a link to a resource file:
+		err1 := os.Link("RESOURCE/stabi.mp4", s.stabi_vid_full_path)
+		if err1 != nil {return s, err1}
+	}
+
     return s, nil
 }
 
@@ -232,14 +249,16 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
 	} else {
 	// We simulate upload, all files are already on disk, but not necessarily in WORKDIR:
 		_, err = Sess.MockShakyVidHdd(); if err != nil { return }
+		Sess.is_done = true
+	    Sess.ID = "12345"
 	}
 
 	ID2SessMux.Lock()
 	ID2Sess[Sess.ID] = Sess
 	ID2SessMux.Unlock()
-//	if ! MockUpload {
+	if ! MockUpload {
 		go ffmpeg(Sess)
-//	}
+	}
 	Sess.ProgressHtml(w)
 }
 
@@ -252,6 +271,7 @@ func SelectUploadFile(w http.ResponseWriter, r *http.Request) {
     // var buf bytes.Buffer
     // err := SelectUploadFileHtmlTmpl.Execute(&buf, MyURL{AddrWithPortSeenByClient: RequestedHostByClient(r)}); if err != nil { panic(err) }
     // fmt.Fprintf(w, buf.String())
+	fmt.Println("In SelectUploadFile")
     err := SelectUploadFileHtmlTmpl.Execute(w, MyURL{AddrWithPortSeenByClient: RequestedHostByClient(r)}); if err != nil { panic(err) }
 }
 
@@ -266,7 +286,7 @@ func setupRoutes() {
     if !AllowCORS {
         http.HandleFunc("/upload", uploadFile)
         http.HandleFunc("/status", status_handler)
-        http.HandleFunc("/download", download_stabi_handler)
+        http.HandleFunc("/download/", download_stabi_handler_get)
         http.HandleFunc("/", SelectUploadFile)
         http.ListenAndServe(":8080", nil)
     } else
@@ -274,6 +294,7 @@ func setupRoutes() {
         mux := http.NewServeMux()
         mux.HandleFunc("/upload", uploadFile)
         mux.HandleFunc("/status", status_handler)
+        mux.HandleFunc("/download/", download_stabi_handler_get)
         mux.HandleFunc("/", SelectUploadFile)
         // cors.Default() setup the middleware with default options being
         // all origins accepted with simple methods (GET, POST). See
@@ -384,6 +405,8 @@ func NewProgressHtmlTmpl() {
 		   			// Enable timer only after the successful transaction with the server.
 					if (!Boolean(dict["is_done"])) {
 					   timer_inst = setTimeout(timer_callback, TimeInterval)
+					} else {
+   					   document.getElementById("id02").innerHTML = '<a href="/download/{{.ID}}"> Your processed file</a>'
 					}
 				}
 			};
@@ -404,7 +427,7 @@ func NewProgressHtmlTmpl() {
        </script>
 
        <div id="id01"> To be replaced. </div>
-        <p>This is an example of a simple HTML page with one paragraph.</p>
+       <div id="id02">  </div>
     </body>
 </html>`)
     if err != nil { panic(err) }
@@ -467,7 +490,7 @@ func (s *MySess) output_files_status() (*OutputStatus, bool) {
 }
 
 
-func download_stabi_handler(w http.ResponseWriter, r *http.Request) {
+func download_stabi_handler_post(w http.ResponseWriter, r *http.Request) {
 // From: https://www.golangprograms.com/example-to-handle-get-and-post-request-in-golang.html
 // Call ParseForm() to parse the raw query and update r.PostForm and r.Form.
 	var err error
@@ -481,6 +504,18 @@ func download_stabi_handler(w http.ResponseWriter, r *http.Request) {
 	if Sess.is_done {
 		_, err = Sess.send_stabi_vid_to_client(w, r); if err != nil { return }
     }
+
+    return
+}
+
+func download_stabi_handler_get(w http.ResponseWriter, r *http.Request) {
+// From: https://yourbasic.org/golang/http-server-example/
+	var err error
+	// fmt.Println("in download_stabi_handler_get")
+	// fmt.Fprintf(w, "Hello, %s!", r.URL.Path[sess_id_start:])
+	sess_id := r.URL.Path[sess_id_start:]
+	Sess := ID2Sess[sess_id]
+	_, err = Sess.send_stabi_vid_to_client(w, r); if err != nil { return }
 
     return
 }
