@@ -4,6 +4,7 @@ package main
 
 // Helpfull snippets:
 // /data/bugaev/PROG/GO/POST/second.html
+// Also, look for *.txt in the project directory.
 
 import (
     "fmt"
@@ -23,7 +24,7 @@ import (
 
 // Globals:
 const sess_id_start = len("download/") + 1
-var MockUpload = true
+var MockUpload = false
 var SelectUploadFileHtmlTmpl *template.Template
 var ProgressHtmlTmpl  *template.Template
 var ID2Sess map[string]*MySess = make(map[string]*MySess)
@@ -71,6 +72,8 @@ func ShakyVidBytes(r *http.Request, s *MySess) ([]byte, bool) {
 type MySess struct {
   ID string
   TmpDir string
+  shaky_file_size_mb int
+  transforms_file_size_target_kb int
   shaky_vid_orig_name string
   shaky_vid_full_path string
   stabi_vid string
@@ -144,6 +147,10 @@ func (s *MySess) MockShakyVidHdd () (*MySess, error) {
 		if err1 != nil {return s, err1}
 	}
 
+    s.shaky_file_size_mb, _ = file_size_mb_zero_if_nonexist(s.shaky_vid_full_path)
+    s.transforms_file_size_target_kb, _ = file_size_kb_zero_if_nonexist(s.shaky_vid_full_path)
+	s.transforms_file_size_target_kb = int(float64(s.transforms_file_size_target_kb) / 7.2)
+
     return s, nil
 }
 
@@ -151,6 +158,10 @@ func (s *MySess) ShakyVidHdd (fileBytes []byte) (*MySess, error) {
     // Create input file "shaky.mp4" within WORKDIR:
     s.shaky_vid_full_path = s.TmpDir + "/shaky.mp4"
     err := ioutil.WriteFile(s.shaky_vid_full_path, fileBytes, 0644)
+    s.shaky_file_size_mb, _ = file_size_mb_zero_if_nonexist(s.shaky_vid_full_path)
+    s.transforms_file_size_target_kb, _ = file_size_kb_zero_if_nonexist(s.shaky_vid_full_path)
+	s.transforms_file_size_target_kb = int(float64(s.transforms_file_size_target_kb) / 7.2)
+
     if err != nil {
       fmt.Println(err)
     }
@@ -238,7 +249,11 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
     }
 
 
-    _, err = Sess.MockMkTmpDir(); if err != nil { fmt.Printf("Error returned by MkTmpDir: %s\n", err); return }
+	if MockUpload {
+		_, err = Sess.MockMkTmpDir(); if err != nil { fmt.Printf("Error returned by MkTmpDir: %s\n", err); return }
+	} else {
+		_, err = Sess.MkTmpDir(); if err != nil { fmt.Printf("Error returned by MockMkTmpDir: %s\n", err); return }
+	}
     Sess.TmpDir2stabi_vid_full_path()
     Sess.WorkDir2ID()
     LimitUpload320MB(r)
@@ -252,6 +267,8 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
 		Sess.is_done = true
 	    Sess.ID = "12345"
 	}
+
+
 
 	ID2SessMux.Lock()
 	ID2Sess[Sess.ID] = Sess
@@ -365,7 +382,7 @@ func NewSelectUploadFileHtmlTmpl() {
       action="http://{{.AddrWithPortSeenByClient}}/upload"
       method="post"
     >
-      <input type="file" name="myFile" />
+      <input type="file" name="myFile" /><br><br>
       <input type="submit" value="upload" />
     </form>
   </body>
@@ -380,7 +397,37 @@ func NewProgressHtmlTmpl() {
 `<!DOCTYPE html>
 <html>
     <head>
-        <title>Example</title>
+        <title>Video Stabilization</title>
+
+		<style>
+		#TransProgress {
+			width: 100%;
+			background-color: grey;
+		}
+
+		#TransBar {
+			width: 1%;
+  			height: 30px;
+  			background-color: green;
+ 			text-align: center; /* To center it horizontally (if you want) */
+   			line-height: 30px; /* To center it vertically */
+     		color: white; 
+		}
+
+		#StabiProgress {
+			width: 100%;
+			background-color: grey;
+		}
+
+		#StabiBar {
+			width: 1%;
+  			height: 30px;
+  			background-color: green;
+ 			text-align: center; /* To center it horizontally (if you want) */
+   			line-height: 30px; /* To center it vertically */
+     		color: white; 
+		}
+		</style>
     </head>
 
 
@@ -400,13 +447,21 @@ func NewProgressHtmlTmpl() {
                 	var dict = JSON.parse(this.responseText);
 					// DO WHAT YOU WANTED ONCE YOU GOT THE VALID REPORT:
                    	// document.getElementById("id01").innerHTML = dict["stabi_file_size_mb"]
-		            document.getElementById("id01").innerHTML = this.responseText
+		            // document.getElementById("id01").innerHTML = this.responseText // JSON response.
+
+					var elem = document.getElementById("TransBar");
+					elem.style.width = Number(dict["transforms_file_size_kb"]) / dict["transforms_file_size_target_kb"] * 100. + "%"
+					elem.innerHTML = dict["transforms_file_size_kb"] + " KB"
+
+					elem = document.getElementById("StabiBar");
+					elem.style.width = Number(dict["stabi_file_size_mb"]) / dict["shaky_file_size_mb"] * 100. + "%"
+					elem.innerHTML = dict["stabi_file_size_mb"] + " MB"
 		   			// Check the status after TimeInterval milliseconds, idle before that.
 		   			// Enable timer only after the successful transaction with the server.
 					if (!Boolean(dict["is_done"])) {
 					   timer_inst = setTimeout(timer_callback, TimeInterval)
 					} else {
-   					   document.getElementById("id02").innerHTML = '<a href="/download/{{.ID}}"> Your processed file</a>'
+   					   document.getElementById("id02").innerHTML = '<a href="/download/{{.ID}}"> Your stabilized file</a>'
 					}
 				}
 			};
@@ -426,15 +481,33 @@ func NewProgressHtmlTmpl() {
            }
        </script>
 
-       <div id="id01"> To be replaced. </div>
-       <div id="id02">  </div>
+
+	<h1>Transformations file</h1>
+
+	<div id="TransProgress">
+  	<div id="TransBar"></div>
+  	</div>
+
+	<h1>Stabilized video file</h1>
+
+	<div id="StabiProgress">
+  	<div id="StabiBar"></div>
+  	</div>
+
+
+
+       <div id="id01"></div>
+
+       <div id="id02"></div>
     </body>
 </html>`)
     if err != nil { panic(err) }
 }
 
 type OutputStatus struct {
-	Transforms_file_size_mb	int		`json:"transforms_file_size_mb"`
+	Shaky_file_size_mb		int		`json:"shaky_file_size_mb"`
+	Transforms_file_size_target_kb int  `json:"transforms_file_size_target_kb"`
+	Transforms_file_size_kb	int		`json:"transforms_file_size_kb"`
 	Stabi_file_size_mb		int		`json:"stabi_file_size_mb"`
 	Is_done					bool	`json:"is_done"`
 }
@@ -448,6 +521,34 @@ func file_system_entry_exists(path string) (bool, error) {
     if err == nil { return true, nil }
     if os.IsNotExist(err) { return false, nil }
     return false, err
+}
+
+
+func file_size_kb_zero_if_nonexist(path string) (int, bool) {
+	// fmt.Println("BEFORE DOING STAT FOR: ",  path)
+	info, err := os.Stat(path);
+	// fmt.Println("AFTER DOING STAT FOR: ",  path)
+	// It is not a file but a directory - it shouldn't have happened:
+
+	if err != nil {
+		// Doesn't exist is OK --- it may not be created yet.
+		if os.IsNotExist(err) {
+			// fmt.Println("FILE DOESN'T EXIST: ",  path)
+	        return 0, true
+		}
+		// Otherwise, err is a problem:
+		fmt.Println("ERROR: FILE HAS SOME PROBLEM: ",  path)
+		return 0, false
+	}
+
+	if info.IsDir() {
+		fmt.Println("ERROR: FILE IS A DIRECTORY: ",  path)
+		return 0, false }
+
+	// And finally, if file exists and no errors triggered:
+	x := info.Size()
+	// fmt.Println("FILE EXISTS: ",  path)
+	return int(x / 1000), true // Return Thousands of Bytes.
 }
 
 
@@ -481,7 +582,9 @@ func file_size_mb_zero_if_nonexist(path string) (int, bool) {
 func (s *MySess) output_files_status() (*OutputStatus, bool) {
 	stat := &OutputStatus{}
 	var ok bool
-	stat.Transforms_file_size_mb, ok = file_size_mb_zero_if_nonexist(s.transforms_full_path)
+	stat.Shaky_file_size_mb =      s.shaky_file_size_mb
+	stat.Transforms_file_size_target_kb = s.transforms_file_size_target_kb
+	stat.Transforms_file_size_kb, ok = file_size_kb_zero_if_nonexist(s.transforms_full_path)
 	if !ok { return nil, false }
 	stat.Stabi_file_size_mb, ok = file_size_mb_zero_if_nonexist(s.stabi_vid_full_path)
 	if !ok { return nil, false }
@@ -545,7 +648,7 @@ func status_handler(w http.ResponseWriter, r *http.Request) {
     // }
 
 	fmt.Println("------------------------------------------------------------------------------------")
-	fmt.Println(StatusResp.Transforms_file_size_mb, StatusResp.Stabi_file_size_mb)
+	fmt.Println(StatusResp.Transforms_file_size_kb, StatusResp.Stabi_file_size_mb)
 	fmt.Println("------------------------------------------------------------------------------------")
 
     w.Header().Set("Content-Type", "application/json")
