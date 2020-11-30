@@ -22,3 +22,7 @@ Image ID is based on `docker image ls`, yours may be different:
 ```
 docker run -p 127.0.0.1:8080:8080/tcp 4fe27ad1cbea /serv
 ```
+
+# In browser
+
+URL: http://localhost:8080/
